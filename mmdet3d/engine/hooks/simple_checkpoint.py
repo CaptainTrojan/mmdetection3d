@@ -13,8 +13,9 @@ from mmengine.fileio import FileClient, get_file_backend
 from mmengine.logging import print_log
 from mmengine.registry import HOOKS
 from mmengine.utils import is_list_of, is_seq_of
-from .hook import Hook
+from mmengine.hooks import Hook
 import mlflow
+import subprocess
 
 DATA_BATCH = Optional[Union[dict, tuple, list]]
 
@@ -24,17 +25,6 @@ class SimpleCheckpoint(Hook):
     """Save checkpoints periodically.
 
     Args:
-        interval (int): The saving period. If ``by_epoch=True``, interval
-            indicates epochs, otherwise it indicates iterations.
-            Defaults to -1, which means "never".
-        by_epoch (bool): Saving checkpoints by epoch or by iteration.
-            Defaults to True.
-        save_optimizer (bool): Whether to save optimizer state_dict in the
-            checkpoint. It is usually used for resuming experiments.
-            Defaults to True.
-        save_param_scheduler (bool): Whether to save param_scheduler state_dict
-            in the checkpoint. It is usually used for resuming experiments.
-            Defaults to True.
         out_dir (str, Path, Optional): The root directory to save checkpoints.
             If not specified, ``runner.work_dir`` will be used by default. If
             specified, the ``out_dir`` will be the concatenation of ``out_dir``
@@ -97,20 +87,6 @@ class SimpleCheckpoint(Hook):
             at which checkpoint saving begins. Defaults to 0, which means
             saving at the beginning.
             `New in version 0.8.3.`
-
-    Examples:
-        >>> # Save best based on single metric
-        >>> CheckpointHook(interval=2, by_epoch=True, save_best='acc',
-        >>>                rule='less')
-        >>> # Save best based on multi metrics with the same comparison rule
-        >>> CheckpointHook(interval=2, by_epoch=True,
-        >>>                save_best=['acc', 'mIoU'], rule='greater')
-        >>> # Save best based on multi metrics with different comparison rule
-        >>> CheckpointHook(interval=2, by_epoch=True,
-        >>>                save_best=['FID', 'IS'], rule=['less', 'greater'])
-        >>> # Save best based on single metric and publish model after training
-        >>> CheckpointHook(interval=2, by_epoch=True, save_best='acc',
-        >>>                rule='less', published_keys=['meta', 'state_dict'])
     """
     out_dir: str
 
@@ -130,10 +106,6 @@ class SimpleCheckpoint(Hook):
     _default_less_keys = ['loss']
 
     def __init__(self,
-                 interval: int = -1,
-                 by_epoch: bool = True,
-                 save_optimizer: bool = True,
-                 save_param_scheduler: bool = True,
                  out_dir: Optional[Union[str, Path]] = None,
                  max_keep_ckpts: int = -1,
                  save_last: bool = True,
@@ -147,12 +119,10 @@ class SimpleCheckpoint(Hook):
                  published_keys: Union[str, List[str], None] = None,
                  save_begin: int = 0,
                  **kwargs) -> None:
-        self.interval = interval
-        self.by_epoch = by_epoch
-        self.save_optimizer = save_optimizer
-        self.save_param_scheduler = save_param_scheduler
+        self.by_epoch = True
+        self.save_optimizer = False
+        self.save_param_scheduler = False
         self.out_dir = out_dir  # type: ignore
-        self.max_keep_ckpts = max_keep_ckpts
         self.save_last = save_last
         self.args = kwargs
 
@@ -308,25 +278,6 @@ class SimpleCheckpoint(Hook):
                             key_indicator] = runner.message_hub.get_info(
                                 best_ckpt_name)
 
-        if self.max_keep_ckpts > 0:
-            keep_ckpt_ids = []
-            if 'keep_ckpt_ids' in runner.message_hub.runtime_info:
-                keep_ckpt_ids = runner.message_hub.get_info('keep_ckpt_ids')
-
-                while len(keep_ckpt_ids) > self.max_keep_ckpts:
-                    step = keep_ckpt_ids.pop(0)
-                    if is_main_process():
-                        path = self.file_backend.join_path(
-                            self.out_dir, self.filename_tmpl.format(step))
-                        if self.file_backend.isfile(path):
-                            self.file_backend.remove(path)
-                        elif self.file_backend.isdir(path):
-                            # checkpoints saved by deepspeed are directories
-                            self.file_backend.rmtree(path)
-
-            self.keep_ckpt_ids: deque = deque(keep_ckpt_ids,
-                                              self.max_keep_ckpts)
-
     def after_val_epoch(self, runner, metrics):
         """Save the checkpoint and synchronize buffers after each evaluation
         epoch.
@@ -343,56 +294,6 @@ class SimpleCheckpoint(Hook):
 
         self._save_best_checkpoint(runner, metrics)
 
-    def _save_checkpoint_with_step(self, runner, step, meta):
-        # remove other checkpoints before save checkpoint to make the
-        # self.keep_ckpt_ids are saved as expected
-        if self.max_keep_ckpts > 0:
-            # _save_checkpoint and _save_best_checkpoint may call this
-            # _save_checkpoint_with_step in one epoch
-            if len(self.keep_ckpt_ids) > 0 and self.keep_ckpt_ids[-1] == step:
-                pass
-            else:
-                if len(self.keep_ckpt_ids) == self.max_keep_ckpts:
-                    _step = self.keep_ckpt_ids.popleft()
-                    if is_main_process():
-                        ckpt_path = self.file_backend.join_path(
-                            self.out_dir, self.filename_tmpl.format(_step))
-
-                        if self.file_backend.isfile(ckpt_path):
-                            self.file_backend.remove(ckpt_path)
-                        elif self.file_backend.isdir(ckpt_path):
-                            # checkpoints saved by deepspeed are directories
-                            self.file_backend.rmtree(ckpt_path)
-
-                self.keep_ckpt_ids.append(step)
-                runner.message_hub.update_info('keep_ckpt_ids',
-                                               list(self.keep_ckpt_ids))
-
-        ckpt_filename = self.filename_tmpl.format(step)
-        self.last_ckpt = self.file_backend.join_path(self.out_dir,
-                                                     ckpt_filename)
-        runner.message_hub.update_info('last_ckpt', self.last_ckpt)
-
-        runner.save_checkpoint(
-            self.out_dir,
-            ckpt_filename,
-            self.file_client_args,
-            save_optimizer=self.save_optimizer,
-            save_param_scheduler=self.save_param_scheduler,
-            meta=meta,
-            by_epoch=self.by_epoch,
-            backend_args=self.backend_args,
-            **self.args)
-
-        # Model parallel-like training should involve pulling sharded states
-        # from all ranks, but skip the following procedure.
-        if not is_main_process():
-            return
-
-        save_file = osp.join(runner.work_dir, 'last_checkpoint')
-        with open(save_file, 'w') as f:
-            f.write(self.last_ckpt)  # type: ignore
-
     def _save_best_checkpoint(self, runner, metrics) -> None:
         """Save the current checkpoint and delete outdated checkpoint.
 
@@ -404,10 +305,10 @@ class SimpleCheckpoint(Hook):
             return
 
         if self.by_epoch:
-            ckpt_filename = self.filename_tmpl.format(runner.epoch)
+            # ckpt_filename = self.filename_tmpl.format(runner.epoch)
             cur_type, cur_time = 'epoch', runner.epoch
         else:
-            ckpt_filename = self.filename_tmpl.format(runner.iter)
+            # ckpt_filename = self.filename_tmpl.format(runner.iter)
             cur_type, cur_time = 'iter', runner.iter
 
         meta = dict(epoch=runner.epoch, iter=runner.iter)
@@ -416,7 +317,7 @@ class SimpleCheckpoint(Hook):
         if 'auto' in self.key_indicators:
             self._init_rule(self.rules, [list(metrics.keys())[0]])
 
-        best_ckpt_updated = False
+        # best_ckpt_updated = False
         # save best logic
         # get score from messagehub
         for key_indicator, rule in zip(self.key_indicators, self.rules):
@@ -440,7 +341,7 @@ class SimpleCheckpoint(Hook):
                     key_score, best_score):
                 continue
 
-            best_ckpt_updated = True
+            # best_ckpt_updated = True
 
             best_score = key_score
             runner.message_hub.update_info(best_score_key, best_score)
@@ -460,7 +361,7 @@ class SimpleCheckpoint(Hook):
                         f'The previous best checkpoint {best_ckpt_path} '
                         'is removed')
 
-            best_ckpt_name = f'best_{key_indicator}_{ckpt_filename}'
+            best_ckpt_name = 'best_ckpt.pth'
             # Replace illegal characters for filename with `_`
             best_ckpt_name = best_ckpt_name.replace('/', '_')
             if len(self.key_indicators) == 1:
@@ -487,14 +388,45 @@ class SimpleCheckpoint(Hook):
             runner.logger.info(
                 f'The best checkpoint with {best_score:0.4f} {key_indicator} '
                 f'at {cur_time} {cur_type} is saved to {best_ckpt_name}.')
+                        
+            # Michal: Here is where we jump in :-)
+            # Export the model to ONNX
+            command = [
+                "python",
+                "/workspace/mmdeploy/tools/deploy.py",
+                "/workspace/mmdeploy/configs/mmdet3d/voxel-detection/voxel-detection_onnxruntime_dynamic.py",
+                f"{runner.cfg.filename}",
+                f"{runner.work_dir}/best_ckpt.pth",
+                "data/kitti-stereo-pcl/training/velodyne_reduced/000000.bin"
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                runner.logger.info("Model successfully exported to ONNX.")
+                # Log the files to MLFlow
+                mlflow.log_artifact(f"end2end.onnx", artifact_path="models")
+                runner.logger.info("Model successfully logged to MLFlow.")
+            else:
+                runner.logger.error(f"Failed to export model to OpenVINO: {result.stderr}")
 
-        # save checkpoint again to update the best_score and best_ckpt stored
-        # in message_hub because the checkpoint saved in `after_train_epoch`
-        # or `after_train_iter` stage only keep the previous best checkpoint
-        # not the current best checkpoint which causes the current best
-        # checkpoint can not be removed when resuming training.
-        if best_ckpt_updated and self.last_ckpt is not None:
-            self._save_checkpoint_with_step(runner, cur_time, meta)
+            # Export the model to OpenVINO
+            command = [
+                "python",
+                "/workspace/mmdeploy/tools/deploy.py",
+                "/workspace/mmdeploy/configs/mmdet3d/voxel-detection/voxel-detection_openvino_dynamic-kitti-32x4.py",
+                f"{runner.cfg.filename}",
+                f"{runner.work_dir}/best_ckpt.pth",
+                "data/kitti-stereo-pcl/training/velodyne_reduced/000000.bin"
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                runner.logger.info("Model successfully exported to OpenVINO.")
+                # Log the files to MLFlow
+                mlflow.log_artifact(f"end2end.xml", artifact_path="models")
+                mlflow.log_artifact(f"end2end.bin", artifact_path="models")
+                mlflow.log_artifact(f"end2end.mapping", artifact_path="models")
+                runner.logger.info("Model successfully logged to MLFlow.")
+            else:
+                runner.logger.error(f"Failed to export model to ONNX: {result.stderr}")
 
     def _init_rule(self, rules, key_indicators) -> None:
         """Initialize rule, key_indicator, comparison_func, and best score. If

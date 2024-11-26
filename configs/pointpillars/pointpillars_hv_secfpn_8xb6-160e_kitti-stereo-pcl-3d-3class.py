@@ -144,6 +144,8 @@ default_hooks = dict(
     timer=dict(type='IterTimerHook'),
     logger=dict(type='LoggerHook', interval=50),
     param_scheduler=dict(type='ParamSchedulerHook'),
-    checkpoint=dict(type='SimpleCheckpoint', interval=1, save_best='auto'),
+    checkpoint=dict(type='SimpleCheckpoint',
+                    save_best='Kitti metric/pred_instances_3d/KITTI/Overall_3D_AP11_moderate',
+                    rule='greater'),
     sampler_seed=dict(type='DistSamplerSeedHook'),
     visualization=dict(type='Det3DVisualizationHook'))
