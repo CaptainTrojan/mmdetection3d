@@ -1065,6 +1065,13 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                 drawn_img_3d = pred_data_3d['img']
             else:  # both instances of gt and pred are empty
                 drawn_img_3d = None
+        elif vis_task == 'lidar_det':
+            # Michal: we have to render this ourselves. Open3D does not support headless mode...
+            # points have shape [N, 4]
+            # bboxes_3d have shape [M, 7]
+            pts = data_input['points']
+            pred_3d_boxes = pred_data_3d['bboxes_3d']
+            gt_3d_boxes = data_sample.eval_ann_info['gt_bboxes_3d']
         else:
             drawn_img_3d = None
 
