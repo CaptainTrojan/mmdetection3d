@@ -3,6 +3,6 @@ _base_ = [
 ]
 
 train_cfg = dict(by_epoch=True, max_epochs=5, val_interval=5)
-custom_hooks = [
-    dict(type='MLFlowONNXHook', interval=16000, artifact_name='model')
-]
+# custom_hooks = [
+#     dict(type='SimpleCheckpoint', interval=16000, artifact_name='model')
+# ]
