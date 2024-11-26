@@ -148,4 +148,11 @@ default_hooks = dict(
                     save_best='Kitti metric/pred_instances_3d/KITTI/Overall_3D_AP11_moderate',
                     rule='greater'),
     sampler_seed=dict(type='DistSamplerSeedHook'),
-    visualization=dict(type='Det3DVisualizationHook'))
+    visualization=dict(type='Det3DVisualizationHook'),
+    early_stopping=dict(
+        type='EarlyStoppingHook',
+        monitor='Kitti metric/pred_instances_3d/KITTI/Overall_3D_AP11_moderate', 
+        rule='greater',
+        patience=15
+    )
+)
