@@ -406,7 +406,7 @@ class SimpleCheckpoint(Hook):
                 mlflow.log_artifact(f"end2end.onnx", artifact_path="models")
                 runner.logger.info("Model successfully logged to MLFlow.")
             else:
-                runner.logger.error(f"Failed to export model to OpenVINO: {result.stderr}")
+                runner.logger.error(f"Failed to export model to ONNX:\n{result.stderr}")
 
             # Export the model to OpenVINO
             command = [
@@ -426,7 +426,7 @@ class SimpleCheckpoint(Hook):
                 mlflow.log_artifact(f"end2end.mapping", artifact_path="models")
                 runner.logger.info("Model successfully logged to MLFlow.")
             else:
-                runner.logger.error(f"Failed to export model to ONNX: {result.stderr}")
+                runner.logger.error(f"Failed to export model to OpenVINO:\n{result.stderr}")
 
     def _init_rule(self, rules, key_indicators) -> None:
         """Initialize rule, key_indicator, comparison_func, and best score. If
